@@ -4,9 +4,6 @@
     using System.Collections.Generic;
     using System.Linq;
     using global::MongoDB.Bson;
-    using global::MongoDB.Bson.IO;
-    using global::MongoDB.Bson.Serialization.Options;
-    using global::MongoDB.Bson.Serialization.Serializers;
     using global::MongoDB.Driver;
     using global::MongoDB.Driver.Builders;
     using NEventStore.Serialization;
@@ -16,14 +13,13 @@
     {
         public static Dictionary<Tkey, Tvalue> AsDictionary<Tkey, Tvalue>(this BsonValue bsonValue)
         {
-            using (BsonReader reader = BsonReader.Create(bsonValue.ToJson()))
+            var value = BsonTypeMapper.MapToDotNetValue(bsonValue);
+            var list = value as List<object>;
+            if (list != null)
             {
-                var dictionarySerializer = new DictionarySerializer<Tkey, Tvalue>();
-                object result = dictionarySerializer.Deserialize(reader,
-                    typeof(Dictionary<Tkey, Tvalue>),
-                    new DictionarySerializationOptions());
-                return (Dictionary<Tkey, Tvalue>)result;
+                return list.Cast<List<object>>().ToDictionary(e => (Tkey)e[0], e => (Tvalue)e[1]);
             }
+            return value as Dictionary<Tkey, Tvalue>;
         }
 
         public static BsonDocument ToMongoCommit(this CommitAttempt commit, LongCheckpoint checkpoint, IDocumentSerializer serializer)
@@ -36,14 +32,14 @@
                     new BsonDocument
                     {
                         {MongoCommitFields.StreamRevision, streamRevision++},
-                        {MongoCommitFields.Payload, new BsonDocumentWrapper(typeof (EventMessage), serializer.Serialize(e))}
+                        {MongoCommitFields.Payload, new BsonDocumentWrapper(serializer.Serialize(e))} 
                     });
             return new BsonDocument
             {
                 {MongoCommitFields.CheckpointNumber, checkpoint.LongValue},
                 {MongoCommitFields.CommitId, commit.CommitId},
                 {MongoCommitFields.CommitStamp, commit.CommitStamp},
-                {MongoCommitFields.Headers, BsonDocumentWrapper.Create(commit.Headers)},
+                {MongoCommitFields.Headers,  Mangle(commit.Headers)},
                 {MongoCommitFields.Events, new BsonArray(events)},
                 {MongoCommitFields.Dispatched, false},
                 {MongoCommitFields.StreamRevisionFrom, streamRevisionStart},
@@ -52,6 +48,15 @@
                 {MongoCommitFields.StreamId, commit.StreamId},
                 {MongoCommitFields.CommitSequence, commit.CommitSequence}
             };
+        }
+
+        private static BsonValue Mangle(this IDictionary<string, object> headers)
+        {
+            if (headers.Any(h => h.Key.Contains(".")))
+            {
+                return new BsonArray(headers.Select(h => new BsonArray(new [] {h.Key, h.Value})));
+            }                        
+            return BsonDocumentWrapper.Create(headers);
         }
 
         public static ICommit ToCommit(this BsonDocument doc, IDocumentSerializer serializer)
